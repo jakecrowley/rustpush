@@ -280,46 +280,49 @@ async fn main() {
     
     
     
-    let config: Arc<MacOSConfig> = Arc::new(if let Ok(config) = plist::from_file("hwconfig.plist") {
-        config
-    } else {
-        println!("Missing hardware config!");
-        println!("The easiest way to get your hardware config is to extract it from validation data from a Mac.");
-        println!("This validation data will not be used to authenticate, and therefore does not need to be recent or valid.");
-        println!("If you need help obtaining validation data, please visit https://github.com/beeper/mac-registration-provider");
-        println!("As long as the hardware identifiers are valid rustpush will work fine.");
-        println!("Validation data will not be required for subsequent re-registrations.");
-        // save hardware config
-        print!("Validation data: ");
-        std::io::stdout().flush().unwrap();
-        let validation_data_b64 = read_input().await;
+    // let config: Arc<MacOSConfig> = Arc::new(if let Ok(config) = plist::from_file("hwconfig.plist") {
+    //     config
+    // } else {
+    //     println!("Missing hardware config!");
+    //     println!("The easiest way to get your hardware config is to extract it from validation data from a Mac.");
+    //     println!("This validation data will not be used to authenticate, and therefore does not need to be recent or valid.");
+    //     println!("If you need help obtaining validation data, please visit https://github.com/beeper/mac-registration-provider");
+    //     println!("As long as the hardware identifiers are valid rustpush will work fine.");
+    //     println!("Validation data will not be required for subsequent re-registrations.");
+    //     // save hardware config
+    //     print!("Validation data: ");
+    //     std::io::stdout().flush().unwrap();
+    //     let validation_data_b64 = read_input().await;
 
-        let validation_data = general_purpose::STANDARD.decode(validation_data_b64.trim()).unwrap();
-        let extracted = HardwareConfig::from_validation_data(&validation_data).unwrap();
+    //     let validation_data = general_purpose::STANDARD.decode(validation_data_b64.trim()).unwrap();
+    //     let extracted = HardwareConfig::from_validation_data(&validation_data).unwrap();
 
-        MacOSConfig {
-            inner: extracted,
-            version: "13.6.4".to_string(),
-            protocol_version: 1660,
-            device_id: Uuid::new_v4().to_string(),
-            icloud_ua: "com.apple.iCloudHelper/282 CFNetwork/1408.0.4 Darwin/22.5.0".to_string(),
-            aoskit_version: "com.apple.AOSKit/282 (com.apple.accountsd/113)".to_string(),
-            udid: Some("55A1CFBF5BB56AD1159BD2CB7D6FF546E48EAAE4BF16188A07B1FB9C83138CA2".to_string()),
-        }
-    });
-    // let host = "https://registration-relay.beeper.com".to_string();
-    // let code = "BZUL-7TB6-JUGN-6Q6W".to_string();
-    // let token = Some("5c175851953ecaf5209185d897591badb6c3e712".to_string());
-    // let config: Arc<RelayConfig> = Arc::new(RelayConfig {
-    //     version: RelayConfig::get_versions(&host, &code, &token).await.unwrap(),
-    //     icloud_ua: "com.apple.iCloudHelper/282 CFNetwork/1408.0.4 Darwin/22.5.0".to_string(),
-    //     aoskit_version: "com.apple.AOSKit/282 (com.apple.accountsd/113)".to_string(),
-    //     dev_uuid: Uuid::new_v4().to_string(),
-    //     protocol_version: 1640,
-    //     host,
-    //     code,
-    //     beeper_token: token,
+    //     MacOSConfig {
+    //         inner: extracted,
+    //         version: "13.6.4".to_string(),
+    //         protocol_version: 1660,
+    //         device_id: Uuid::new_v4().to_string(),
+    //         icloud_ua: "com.apple.iCloudHelper/282 CFNetwork/1408.0.4 Darwin/22.5.0".to_string(),
+    //         aoskit_version: "com.apple.AOSKit/282 (com.apple.accountsd/113)".to_string(),
+    //         udid: Some("55A1CFBF5BB56AD1159BD2CB7D6FF546E48EAAE4BF16188A07B1FB9C83138CA2".to_string()),
+    //     }
     // });
+    let host = "https://registration-relay.beeper.com".to_string();
+    let code = "BZUL-7TB6-JUGN-6Q6W".to_string();
+    let token = Some("5c175851953ecaf5209185d897591badb6c3e712".to_string());
+    let config: Arc<RelayConfig> = Arc::new(RelayConfig {
+        version: RelayConfig::get_versions(&host, &code, &token).await.unwrap(),
+        // mac-shaped identity for albert activation, owned by the relay
+        activation_identity: RelayConfig::get_activation_identity(&host, &code, &token).await.ok(),
+        icloud_ua: "com.apple.iCloudHelper/282 CFNetwork/1408.0.4 Darwin/22.5.0".to_string(),
+        aoskit_version: "com.apple.AOSKit/282 (com.apple.accountsd/113)".to_string(),
+        dev_uuid: Uuid::new_v4().to_string(),
+        protocol_version: 1640,
+        host,
+        code,
+        beeper_token: token,
+        udid: None,
+    });
     fs::write("hwconfig.plist", plist_to_string(config.as_ref()).unwrap()).await.unwrap();
 	
     let saved_state: Option<SavedState> = plist::from_reader_xml(Cursor::new(&data)).ok();
@@ -360,12 +363,13 @@ async fn main() {
             Box::new(|_| {}),
         ).unwrap();
         let result = account.login_email_pass(&gsa.user, gsa.pass.as_ref()).await.unwrap();
+        println!("LOGIN RESULT STATE: {:?}", result);
 
 
         let dsid = account.persisted.as_ref().unwrap().dsid;
 
-        // account.send_2fa_to_devices().await.unwrap();
-        // let result = account.verify_2fa(tfa_closure()).await.unwrap();
+        account.send_2fa_to_devices().await.unwrap();
+        let result = account.verify_2fa(tfa_closure()).await.unwrap();
 
         let done = Arc::new(DebugMutex::new(account));
 
@@ -501,11 +505,8 @@ async fn main() {
     let handle = client.identity.get_handles().await[0].clone();
     client.identity.ensure_private_self(&mut *client.identity.cache.lock().await, &handle, true).await.unwrap();
 
-    // client.identity.refresh_now().await.unwrap();
-    // println!("handle {}", handle);
-
-
-    
+    client.identity.refresh_now().await.unwrap();
+    println!("handle {}", handle);
 
 
     let id_path = PathBuf::from_str("cloudkit.plist").unwrap();
@@ -533,7 +534,7 @@ async fn main() {
 
     let listener = IdmsAuthListener::new(connection.clone()).await;
 
-    error!("2fa code: {}", anisette_client.lock().await.provider.get_2fa_code().await.unwrap());
+    // error!("2fa code: {}", anisette_client.lock().await.provider.get_2fa_code().await.unwrap());
     // plist::to_file_xml(&id_path, &state).unwrap();
 
     // let state: StatusKitState = plist::from_file("statuskit.plist").unwrap_or_default();
@@ -591,6 +592,7 @@ async fn main() {
     //     plist::to_file_xml(&PathBuf::from_str("facetime.plist").unwrap(), state).expect("Failed to serialize plist!");
     // }), connection.clone(), client.identity.clone(), config.clone()).await;
 
+
     let id_path = PathBuf::from_str("trustedpeers.plist").unwrap();
     let state: KeychainClientState = plist::from_file(&id_path).unwrap();
 
@@ -624,7 +626,7 @@ async fn main() {
 
     if let Some(mut s) = session {
         let mut subscription = connection.messages_cont.subscribe();
-        s.setup_trusted_peers(keychain.clone(), b"antifa").await.unwrap();
+        s.setup_trusted_peers(keychain.clone(), b"715259").await.unwrap();
         let listener = IdmsAuthListener::new(connection.clone()).await;
         let anisette_client = anisette_client.clone();
         tokio::task::spawn(async move {
@@ -656,7 +658,7 @@ async fn main() {
 
         // let container = keychain.get_security_container().await.unwrap();
 
-        let cloud_messages = CloudMessagesClient::new(cloudkit.clone(), keychain.clone());
+        // let cloud_messages = CloudMessagesClient::new(cloudkit.clone(), keychain.clone());
         // cloud_messages.sync_attachments(None).await.unwrap();
         
         // cloud_messages.fix().await.unwrap();
@@ -683,7 +685,7 @@ async fn main() {
 
         // keychain.sync_keychain(&KEYCHAIN_ZONES).await.unwrap();
 
-        let container = keychain.get_security_container().await.unwrap();
+        // let container = keychain.get_security_container().await.unwrap();
         // let container = passwords.get_container().await.unwrap();
 
         // let zone = container.private_zone("group-93757E7E-7715-4557-8709-A7CEEC968BFE".to_string());
@@ -697,7 +699,7 @@ async fn main() {
 
 
         // container.create_sync_subscription().await.unwrap();
-        keychain.create_subscriptions().await.unwrap();
+        // keychain.create_subscriptions().await.unwrap();
         // container.register_token(&connection).await.unwrap();
 
 
@@ -1048,58 +1050,58 @@ async fn main() {
                         }
                     }
                 }
-            // },
-            // input = &mut read_task => {
-            //     let Ok(input) = input else {
-            //         read_task = tokio::spawn(read_input());
-            //         continue;
-            //     };
-            //     if input.trim() == "" {
-            //         print!(">> ");
-            //         std::io::stdout().flush().unwrap();
-            //         read_task = tokio::spawn(read_input());
-            //         continue;
-            //     }
-            //     if input.starts_with("filter ") {
-            //         filter_target = input.strip_prefix("filter ").unwrap().to_string().trim().to_string();
-            //         println!("Filtering to {}", filter_target);
-            //     } else if input.trim() == "sms" {
-            //         let mut msg = MessageInst::new(ConversationData {
-            //             participants: vec![],
-            //             cv_name: None,
-            //             sender_guid: Some(Uuid::new_v4().to_string()),
-            //             after_guid: None,
-            //         }, &handle, Message::EnableSmsActivation(true));
-            //         client.send(&mut msg).await.unwrap();
-            //         println!("sms activated");
-            //     } else {
-            //         if filter_target == "" {
-            //             println!("Usage: filter [target]");
-            //         } else {
-            //             let mut msg = NormalMessage::new(input.trim().to_string(), MessageType::IMessage);
-            //             // msg.scheduled_ms = Some((SystemTime::now() + Duration::from_secs(60)).duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64);
-            //             let mut msg = MessageInst::new(ConversationData {
-            //                 participants: vec![filter_target.clone()],
-            //                 cv_name: None,
-            //                 sender_guid: Some(Uuid::new_v4().to_string()),
-            //                 after_guid: None,
-            //             }, &handle, Message::Message(msg));
+            },
+            input = &mut read_task => {
+                let Ok(input) = input else {
+                    read_task = tokio::spawn(read_input());
+                    continue;
+                };
+                if input.trim() == "" {
+                    print!(">> ");
+                    std::io::stdout().flush().unwrap();
+                    read_task = tokio::spawn(read_input());
+                    continue;
+                }
+                if input.starts_with("filter ") {
+                    filter_target = input.strip_prefix("filter ").unwrap().to_string().trim().to_string();
+                    println!("Filtering to {}", filter_target);
+                } else if input.trim() == "sms" {
+                    let mut msg = MessageInst::new(ConversationData {
+                        participants: vec![],
+                        cv_name: None,
+                        sender_guid: Some(Uuid::new_v4().to_string()),
+                        after_guid: None,
+                    }, &handle, Message::EnableSmsActivation(true));
+                    client.send(&mut msg).await.unwrap();
+                    println!("sms activated");
+                } else {
+                    if filter_target == "" {
+                        println!("Usage: filter [target]");
+                    } else {
+                        let mut msg = NormalMessage::new(input.trim().to_string(), MessageType::IMessage);
+                        // msg.scheduled_ms = Some((SystemTime::now() + Duration::from_secs(60)).duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64);
+                        let mut msg = MessageInst::new(ConversationData {
+                            participants: vec![filter_target.clone()],
+                            cv_name: None,
+                            sender_guid: Some(Uuid::new_v4().to_string()),
+                            after_guid: None,
+                        }, &handle, Message::Message(msg));
 
-            //             // msg.scheduled_ms = Some((SystemTime::now() + Duration::from_secs(60)).duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64);
+                        // msg.scheduled_ms = Some((SystemTime::now() + Duration::from_secs(60)).duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64);
 
-            //             if let Err(err) = client.send(&mut msg).await {
-            //                 error!("Error sending message {err}");
-            //             }
+                        if let Err(err) = client.send(&mut msg).await {
+                            error!("Error sending message {err}");
+                        }
 
-            //             // tokio::time::sleep(Duration::from_secs(10)).await;
+                        // tokio::time::sleep(Duration::from_secs(10)).await;
 
-            //             // msg.message = Message::Unschedule;
-            //             // if let Err(err) = client.send(&mut msg).await {
-            //             //     error!("Error sending message {err}");
-            //             // }
-            //         }
-            //     }
-                print!(">> ");
+                        // msg.message = Message::Unschedule;
+                        // if let Err(err) = client.send(&mut msg).await {
+                        //     error!("Error sending message {err}");
+                        // }
+                    }
+                }
+                // print!(">> ");
                 std::io::stdout().flush().unwrap();
                 read_task = tokio::spawn(read_input());
             },

@@ -28,6 +28,28 @@ pub struct Versions {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+pub struct ActivationResp {
+    #[serde(rename = "Serial")]
+    serial: ActivationIdentity,
+}
+
+// identity used for albert activation, provided by the relay's activate bridge command
+// (hybrid mac identity - the relay owns this, do not reuse the iphone's version data here)
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ActivationIdentity {
+    pub product_type: String,
+    pub activation_state: String,
+    pub activation_randomness: String,
+    pub device_class: String,
+    pub unique_device_id: Option<String>,
+    pub ua: Option<String>,
+    pub build_version: String,
+    pub product_version: String,
+    pub activation_device: String,
+    pub serial_number: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct RelayConfig {
     pub version: Versions,
     pub icloud_ua: String,
@@ -38,6 +60,8 @@ pub struct RelayConfig {
     pub code: String,
     pub beeper_token: Option<String>,
     pub udid: Option<String>,
+    #[serde(default)]
+    pub activation_identity: Option<ActivationIdentity>,
 }
 
 impl RelayConfig {
@@ -66,26 +90,88 @@ impl RelayConfig {
 
         Ok(result.versions)
     }
+
+    pub async fn get_activation_identity(host: &str, code: &str, beeper_token: &Option<String>) -> Result<ActivationIdentity, PushError> {
+        let mut data = REQWEST.post(format!("{}/api/v1/bridge/activate", host))
+            .bearer_auth(code)
+            .header("Content-Length", "0");
+
+        if let Some(token) = beeper_token {
+            data = data.header("X-Beeper-Access-Token", token.clone());
+        }
+
+        let result = data.send().await?;
+
+        match result.status().as_u16() {
+            200 => {},
+            404 => {
+                return Err(PushError::DeviceNotFound)
+            },
+            _status => {
+                return Err(PushError::RelayError(_status, result.text().await?))
+            }
+        }
+
+        let result: ActivationResp = result.json().await?;
+
+        Ok(result.serial)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_serial_identity() {
+        let resp: ActivationResp = serde_json::from_str(r#"{"Serial":{"product_type":"iMac13,1","activation_state":"Unactivated","activation_randomness":"634657F8-6FA6-4A8A-B29D-AC033399B8C5","device_class":"MacOS","unique_device_id":null,"ua":null,"build_version":"22G513","product_version":"13.6.4","activation_device":"MacOS","serial_number":"C02WGSSWDNCR"}}"#).unwrap();
+        assert_eq!(resp.serial.serial_number, "C02WGSSWDNCR");
+        assert_eq!(resp.serial.product_type, "iMac13,1");
+        assert_eq!(resp.serial.build_version, "22G513");
+        assert!(resp.serial.unique_device_id.is_none());
+        assert!(resp.serial.ua.is_none());
+    }
 }
 
 #[async_trait]
 impl OSConfig for RelayConfig {
     fn build_activation_info(&self, csr: Vec<u8>) -> ActivationInfo {
-        ActivationInfo {
-            activation_randomness: Uuid::new_v4().to_string().to_uppercase(),
-            activation_state: "Unactivated",
-            build_version: self.version.software_build_id.clone(),
-            device_cert_request: csr.into(),
-            device_class: "MacOS".to_string(),
+        // the relay supplies the mac-shaped activation identity (and a fresh randomness per call);
+        // fall back to the old locally-built hybrid if it wasn't fetched
+        let identity = self.activation_identity.clone().unwrap_or_else(|| ActivationIdentity {
             product_type: "iMac13,1".to_string(),
+            activation_state: "Unactivated".to_string(),
+            activation_randomness: Uuid::new_v4().to_string().to_uppercase(),
+            device_class: "MacOS".to_string(),
+            unique_device_id: None,
+            ua: None,
+            build_version: self.version.software_build_id.clone(),
             product_version: self.version.software_version.clone(),
+            activation_device: "MacOS".to_string(),
             serial_number: self.version.serial_number.clone(),
-            unique_device_id: self.version.unique_device_id.clone().to_uppercase(),
+        });
+
+        ActivationInfo {
+            activation_randomness: identity.activation_randomness,
+            activation_state: match identity.activation_state.as_str() {
+                "Activated" => "Activated",
+                _ => "Unactivated",
+            },
+            build_version: identity.build_version,
+            device_cert_request: csr.into(),
+            device_class: identity.device_class,
+            product_type: identity.product_type,
+            product_version: identity.product_version,
+            serial_number: identity.serial_number,
+            unique_device_id: identity.unique_device_id.unwrap_or_else(|| self.version.unique_device_id.clone()).to_uppercase(),
         }
     }
 
     fn get_udid(&self) -> String {
-        self.udid.clone().expect("missing udid!")
+        // all icloud service requests claim the relay's iphone identity, so the udid
+        // must be the iphone's too (the activation mac identity has no udid of its own).
+        // fall back to the version identity's udid if no explicit override is set
+        self.udid.clone().unwrap_or_else(|| self.version.unique_device_id.clone())
     }
 
     fn get_normal_ua(&self, item: &str) -> String {
@@ -106,7 +192,11 @@ impl OSConfig for RelayConfig {
             // must be mac for ClearADI
             format!("<iMac13,1> <macOS;13.6.4;22G513> <{}>", item)
         } else {
-            self.get_mme_clientinfo(item)
+            // oct 2026 grand slam break: apple rejects iphone os claims with -80045.
+            // use iloader/isideload's verified working claim (see iloader src-tauri/src/account.rs,
+            // working as of late oct 2026, "temporary while waiting for the anisette servers
+            // to start reporting this")
+            format!("<Mac15,7> <macOS;27.0;26A5378j> <{}>", item)
         }
     }
 
@@ -115,9 +205,10 @@ impl OSConfig for RelayConfig {
     }
 
     fn get_gsa_hardware_headers(&self) -> HashMap<String, String> {
-        [
-            ("X-Apple-I-SRL-NO", &self.version.serial_number),
-        ].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+        // oct 2026 grand slam break: a real device serial makes apple resolve the platform
+        // (relay's iphone serial -> iphone -> -80045 even with a mac claim). verified working
+        // implementations (iload/isideload) send no serial at all, so don't send one either
+        HashMap::new()
     }
 
     fn get_version_ua(&self) -> String {
@@ -129,7 +220,7 @@ impl OSConfig for RelayConfig {
     }
 
     fn get_activation_device(&self) -> String {
-        "MacOS".to_string()
+        self.activation_identity.as_ref().map(|identity| identity.activation_device.clone()).unwrap_or_else(|| "MacOS".to_string())
     }
 
     fn get_device_uuid(&self) -> String {

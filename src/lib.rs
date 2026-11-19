@@ -61,7 +61,7 @@ pub use imessage::name_photo_sharing;
 pub use auth::{IdmsAuthListener, IdmsMessage, IdmsRequestedSignIn, ApsData, ApsAlert, AkData, TeardownSignIn, CircleServerSession, IdmsCircleMessage};
 
 use plist::Dictionary;
-pub use relay::RelayConfig;
+pub use relay::{RelayConfig, ActivationIdentity};
 pub use util::get_gateways_for_mccmnc;
 
 
@@ -108,7 +108,7 @@ pub trait OSConfig: Sync + Send {
             client_bundle_id: "com.apple.MobileSMS".to_string(),
             mme_client_info_akd: self.get_adi_mme_info("com.apple.AuthKit/1 (com.apple.akd/1.0)", require_mac),
             mme_client_info: self.get_adi_mme_info("com.apple.AuthKit/1 (com.apple.MobileSMS/1262.500.151.1.2)", require_mac),
-            akd_user_agent: "akd/1.0 CFNetwork/1494.0.7 Darwin/23.4.0".to_string(),
+            akd_user_agent: "akd/1.0 CFNetwork/811.5.4".to_string(),
             browser_user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)".to_string(),
             hardware_headers: self.get_gsa_hardware_headers(),
             push_token: push.token.map(|i| encode_hex(&i).to_uppercase()),
